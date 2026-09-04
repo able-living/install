@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+umask 077
+
+readonly GITHUB_REPOSITORY="able-living/odoo-stack"
+readonly INSTALLER_PATH="deploy/bootstrap/install.sh"
+INSTALLER_REF="${ABLE_LIVING_INSTALLER_REF:-main}"
+TEMP_ROOT=""
+GITHUB_AUTH_MODE=""
+GITHUB_TOKEN=""
+FORWARD_ARGS=()
+
+log() {
+    printf '[able-living-install] %s\n' "$*"
+}
+
+fail() {
+    log "ERROR: $*" >&2
+    exit 1
+}
+
+cleanup() {
+    local status=$?
+
+    GITHUB_TOKEN=""
+    if [ -n "$TEMP_ROOT" ] && [ -d "$TEMP_ROOT" ]; then
+        rm -rf -- "$TEMP_ROOT"
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
+
+usage() {
+    cat <<'EOF'
+Usage: odoo-stack [--installer-ref REF] [-- INSTALLER_ARGS...]
+
+Download the private Able Living Odoo Stack installer after GitHub
+authentication and execute it as root.
+
+Options:
+  --installer-ref REF  main, staging, or a full lowercase Git SHA
+  -h, --help           Show this help
+
+Unknown arguments such as --plan are passed to the private installer.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --installer-ref)
+            [ "$#" -ge 2 ] || fail "--installer-ref requires a value"
+            INSTALLER_REF="$2"
+            shift 2
+            ;;
+        --)
+            shift
+            FORWARD_ARGS+=("$@")
+            break
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            FORWARD_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [ "$INSTALLER_REF" != "main" ] \
+    && [ "$INSTALLER_REF" != "staging" ] \
+    && [[ ! "$INSTALLER_REF" =~ ^[0-9a-f]{40}$ ]]; then
+    fail "installer ref must be main, staging, or a full lowercase Git SHA"
+fi
+
+run_as_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+        return
+    fi
+    command -v sudo >/dev/null 2>&1 \
+        || fail "run this command as root or install sudo"
+    sudo "$@"
+}
+
+install_github_cli() {
+    command -v gh >/dev/null 2>&1 && return
+    [ -r /etc/os-release ] || fail "/etc/os-release is missing"
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    [ "${ID:-}" = "debian" ] || fail "automatic GitHub CLI installation supports Debian only"
+    run_as_root apt-get update
+    run_as_root apt-get install -y --no-install-recommends ca-certificates gh
+}
+
+prompt() {
+    local variable="$1"
+    local label="$2"
+    local default_value="${3:-}"
+    local value=""
+
+    if [ -n "$default_value" ]; then
+        printf '%s [%s]: ' "$label" "$default_value" >&2
+    else
+        printf '%s: ' "$label" >&2
+    fi
+    IFS= read -r value || fail "input ended while reading $label"
+    [ -n "$value" ] || value="$default_value"
+    printf -v "$variable" '%s' "$value"
+}
+
+prompt_secret() {
+    local variable="$1"
+    local label="$2"
+    local value=""
+
+    printf '%s: ' "$label" >&2
+    IFS= read -r -s value || fail "input ended while reading $label"
+    printf '\n' >&2
+    [ -n "$value" ] || fail "$label cannot be empty"
+    printf -v "$variable" '%s' "$value"
+}
+
+select_github_auth() {
+    local selected=""
+
+    cat >&2 <<'EOF'
+
+请选择 GitHub 认证方式：
+
+1. 使用 gh 登录
+2. 输入临时只读 Token
+EOF
+    prompt selected "请输入认证方式" "1"
+    case "${selected,,}" in
+        1|gh|login)
+            GITHUB_AUTH_MODE="gh"
+            if ! gh auth status --hostname github.com >/dev/null 2>&1; then
+                export GH_CONFIG_DIR="$TEMP_ROOT/gh"
+                install -d -m 0700 "$GH_CONFIG_DIR"
+                gh auth login \
+                    --hostname github.com \
+                    --git-protocol https \
+                    --insecure-storage \
+                    --web \
+                    --scopes repo
+            fi
+            ;;
+        2|token|pat)
+            GITHUB_AUTH_MODE="token"
+            prompt_secret GITHUB_TOKEN "请输入临时只读 Token"
+            ;;
+        *) fail "GitHub authentication method must be 1 or 2" ;;
+    esac
+}
+
+github_command() {
+    if [ "$GITHUB_AUTH_MODE" = "token" ]; then
+        GH_TOKEN="$GITHUB_TOKEN" gh "$@"
+    else
+        gh "$@"
+    fi
+}
+
+install_github_cli
+TEMP_ROOT=$(mktemp -d /tmp/able-living-launcher.XXXXXX)
+select_github_auth
+
+github_login=$(github_command api user --jq .login 2>/dev/null) \
+    || fail "GitHub credentials are invalid"
+permission=$(github_command repo view "$GITHUB_REPOSITORY" \
+    --json viewerPermission --jq .viewerPermission 2>/dev/null) \
+    || fail "GitHub account cannot read $GITHUB_REPOSITORY"
+case "$permission" in
+    READ|TRIAGE|WRITE|MAINTAIN|ADMIN) ;;
+    *) fail "GitHub account has insufficient repository permission: $permission" ;;
+esac
+log "GitHub access verified for $github_login ($permission)"
+
+resolved_sha=$(github_command api \
+    "repos/$GITHUB_REPOSITORY/commits/$INSTALLER_REF" --jq .sha 2>/dev/null) \
+    || fail "could not resolve installer ref $INSTALLER_REF"
+[[ "$resolved_sha" =~ ^[0-9a-f]{40}$ ]] \
+    || fail "GitHub returned an invalid installer SHA"
+
+installer="$TEMP_ROOT/install.sh"
+token_file="$TEMP_ROOT/github-token"
+github_command api \
+    --header "Accept: application/vnd.github.raw+json" \
+    "repos/$GITHUB_REPOSITORY/contents/$INSTALLER_PATH?ref=$resolved_sha" \
+    > "$installer" \
+    || fail "could not download the private installer"
+bash -n "$installer" || fail "downloaded installer is not valid Bash"
+chmod 0700 "$installer"
+install -m 0600 /dev/null "$token_file"
+if [ "$GITHUB_AUTH_MODE" = "token" ]; then
+    printf '%s\n' "$GITHUB_TOKEN" > "$token_file"
+else
+    gh auth token --hostname github.com > "$token_file"
+fi
+
+installer_sha256=$(sha256sum "$installer" | awk '{print $1}')
+log "resolved private installer $resolved_sha ($installer_sha256)"
+run_as_root bash "$installer" \
+    --github-token-file "$token_file" \
+    "${FORWARD_ARGS[@]}"

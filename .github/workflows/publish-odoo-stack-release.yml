@@ -1,23 +1,23 @@
-name: Publish Odoo Stack installer release
+name: Publish Odoo Stack launcher release
 
 on:
   push:
-    branches: [main, staging]
-    paths:
-      - "payload/odoo-stack-install.sh"
-      - "payload/odoo-stack-install.sh.sha256"
-      - "source.json"
+    branches: [main]
+    tags:
+      - "v*"
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: publish-odoo-stack-${{ github.ref_name }}
+  group: publish-odoo-stack-launcher-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -28,115 +28,40 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
 
-      - name: Validate source and installer
-        env:
-          EXPECTED_CHANNEL: ${{ github.ref_name }}
+      - name: Validate launcher
         run: |
           set -euo pipefail
           python3 -m unittest discover -s tests -v
-          test -f payload/odoo-stack-install.sh
-          test -f payload/odoo-stack-install.sh.sha256
-          test -f source.json
-          bash -n payload/odoo-stack-install.sh
-          shellcheck payload/odoo-stack-install.sh
-          sha256sum --check payload/odoo-stack-install.sh.sha256
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          import re
+          bash -n odoo-stack
+          shellcheck odoo-stack
 
-          source = json.loads(Path("source.json").read_text(encoding="utf-8"))
-          if source != {
-              "repository": "able-living/odoo-stack",
-              "channel": os.environ["EXPECTED_CHANNEL"],
-              "sha": source.get("sha"),
-          }:
-              raise SystemExit("source.json contains unexpected fields or values")
-          if not re.fullmatch(r"[0-9a-f]{40}", str(source["sha"])):
-              raise SystemExit("source SHA must be a full lowercase Git SHA")
-          PY
+  release:
+    needs: validate
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
 
-      - name: Prepare release assets
-        id: release
-        env:
-          REPOSITORY: ${{ github.repository }}
-          CHANNEL: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          source_sha=$(python3 -c \
-            'import json; print(json.load(open("source.json"))["sha"])')
-          installer_sha=$(awk '{print $1}' payload/odoo-stack-install.sh.sha256)
-          tag="odoo-stack-${CHANNEL}-${source_sha}"
-          asset_root="$RUNNER_TEMP/odoo-stack-assets"
-          install -d -m 0700 "$asset_root"
-          install -m 0755 payload/odoo-stack-install.sh \
-            "$asset_root/odoo-stack-install.sh"
-          install -m 0644 payload/odoo-stack-install.sh.sha256 \
-            "$asset_root/odoo-stack-install.sh.sha256"
-          install -m 0644 source.json "$asset_root/source.json"
-          INSTALLER_URL_VALUE="https://github.com/${REPOSITORY}/releases/download/${tag}/odoo-stack-install.sh" \
-          INSTALLER_SHA256_VALUE="$installer_sha" \
-          INSTALLER_RELEASE_VALUE="$tag" \
-          python3 - templates/odoo-stack-launcher.sh "$asset_root/odoo-stack" <<'PY'
-          import os
-          from pathlib import Path
-          import sys
-
-          source = Path(sys.argv[1]).read_text(encoding="utf-8")
-          replacements = {
-              "__INSTALLER_URL__": os.environ["INSTALLER_URL_VALUE"],
-              "__INSTALLER_SHA256__": os.environ["INSTALLER_SHA256_VALUE"],
-              "__INSTALLER_RELEASE__": os.environ["INSTALLER_RELEASE_VALUE"],
-          }
-          for old, new in replacements.items():
-              source = source.replace(old, new)
-          if "__INSTALLER_" in source:
-              raise SystemExit("launcher contains unresolved placeholders")
-          Path(sys.argv[2]).write_text(source, encoding="utf-8")
-          PY
-          chmod 0755 "$asset_root/odoo-stack"
-          bash -n "$asset_root/odoo-stack"
-          shellcheck "$asset_root/odoo-stack"
-          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
-          printf 'asset_root=%s\n' "$asset_root" >> "$GITHUB_OUTPUT"
-          printf 'source_sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
-
-      - name: Publish immutable release
+      - name: Publish launcher release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-          ASSET_ROOT: ${{ steps.release.outputs.asset_root }}
-          SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
-          CHANNEL: ${{ github.ref_name }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
-            existing="$RUNNER_TEMP/existing-assets"
-            install -d -m 0700 "$existing"
-            gh release download "$TAG" --dir "$existing"
-            for asset in \
-              odoo-stack odoo-stack-install.sh \
-              odoo-stack-install.sh.sha256 source.json; do
-              cmp "$ASSET_ROOT/$asset" "$existing/$asset"
-            done
-            echo "release $TAG already exists with identical assets"
-            exit 0
+            echo "release $TAG already exists" >&2
+            exit 1
           fi
-
-          args=(
-            gh release create "$TAG"
-            "$ASSET_ROOT/odoo-stack"
-            "$ASSET_ROOT/odoo-stack-install.sh"
-            "$ASSET_ROOT/odoo-stack-install.sh.sha256"
-            "$ASSET_ROOT/source.json"
-            --target "$GITHUB_SHA"
-            --title "Odoo Stack ${CHANNEL} ${SOURCE_SHA:0:12}"
-            --notes "Installer built from able-living/odoo-stack@${SOURCE_SHA}."
-          )
-          if [ "$CHANNEL" = "staging" ]; then
-            args+=(--prerelease --latest=false)
-          else
-            args+=(--latest)
-          fi
+          sha256sum odoo-stack > odoo-stack.sha256
+          args=(gh release create "$TAG" odoo-stack odoo-stack.sha256
+            --verify-tag
+            --title "Able Living installer launcher $TAG"
+            --generate-notes)
+          case "$TAG" in
+            *-alpha.*|*-beta.*|*-rc.*) args+=(--prerelease --latest=false) ;;
+            *) args+=(--latest) ;;
+          esac
           "${args[@]}"
