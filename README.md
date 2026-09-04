@@ -6,10 +6,21 @@ and customer data remain private.
 
 ## Odoo Stack
 
-Install with the latest Production-approved launcher:
+After the private installer is approved for Production, install with the latest
+stable launcher:
 
 ```bash
 bash <(curl -fsSL https://github.com/able-living/install/releases/latest/download/odoo-stack)
+```
+
+No stable launcher is published while the private installer remains on
+Staging. The current candidate can be used for an authorized, non-destructive
+plan validation:
+
+```bash
+ABLE_LIVING_INSTALLER_REF=staging \
+  bash <(curl -fsSL https://github.com/able-living/install/releases/download/v0.1.0-rc.2/odoo-stack) \
+  -- --plan
 ```
 
 The launcher installs GitHub CLI when needed, asks the operator to authenticate,
