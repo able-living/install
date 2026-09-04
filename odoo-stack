@@ -203,6 +203,18 @@ fi
 
 installer_sha256=$(sha256sum "$installer" | awk '{print $1}')
 log "resolved private installer $resolved_sha ($installer_sha256)"
-run_as_root bash "$installer" \
-    --github-token-file "$token_file" \
-    "${FORWARD_ARGS[@]}"
+plan_only=0
+for argument in "${FORWARD_ARGS[@]}"; do
+    if [ "$argument" = "--plan" ]; then
+        plan_only=1
+    fi
+done
+if [ "$plan_only" = "1" ]; then
+    bash "$installer" \
+        --github-token-file "$token_file" \
+        "${FORWARD_ARGS[@]}"
+else
+    run_as_root bash "$installer" \
+        --github-token-file "$token_file" \
+        "${FORWARD_ARGS[@]}"
+fi

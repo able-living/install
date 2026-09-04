@@ -64,9 +64,14 @@ class LauncherTest(unittest.TestCase):
             fake_gh.chmod(0o755)
             fake_id = bin_root / "id"
             fake_id.write_text(
-                "#!/usr/bin/env bash\nprintf '0\\n'\n", encoding="utf-8"
+                "#!/usr/bin/env bash\nprintf '1000\\n'\n", encoding="utf-8"
             )
             fake_id.chmod(0o755)
+            fake_sudo = bin_root / "sudo"
+            fake_sudo.write_text(
+                "#!/usr/bin/env bash\nexit 99\n", encoding="utf-8"
+            )
+            fake_sudo.chmod(0o755)
             installer = root / "installer.sh"
             installer.write_text(
                 "#!/usr/bin/env bash\n"
