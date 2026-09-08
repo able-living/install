@@ -86,13 +86,15 @@ run_as_root() {
 }
 
 install_github_cli() {
-    command -v gh >/dev/null 2>&1 && return
+    if command -v gh >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+        return
+    fi
     [ -r /etc/os-release ] || fail "/etc/os-release is missing"
     # shellcheck disable=SC1091
     . /etc/os-release
     [ "${ID:-}" = "debian" ] || fail "automatic GitHub CLI installation supports Debian only"
     run_as_root apt-get update
-    run_as_root apt-get install -y --no-install-recommends ca-certificates gh
+    run_as_root apt-get install -y --no-install-recommends ca-certificates gh git
 }
 
 prompt() {
@@ -126,6 +128,12 @@ prompt_secret() {
 select_github_auth() {
     local selected=""
 
+    if gh auth status --hostname github.com >/dev/null 2>&1; then
+        GITHUB_AUTH_MODE="gh"
+        log "检测到已有 GitHub 登录，直接复用当前账号"
+        return
+    fi
+
     cat >&2 <<'EOF'
 
 请选择 GitHub 认证方式：
@@ -137,16 +145,14 @@ EOF
     case "${selected,,}" in
         1|gh|login)
             GITHUB_AUTH_MODE="gh"
-            if ! gh auth status --hostname github.com >/dev/null 2>&1; then
-                export GH_CONFIG_DIR="$TEMP_ROOT/gh"
-                install -d -m 0700 "$GH_CONFIG_DIR"
-                gh auth login \
-                    --hostname github.com \
-                    --git-protocol https \
-                    --insecure-storage \
-                    --web \
-                    --scopes repo
-            fi
+            log "请在你电脑的浏览器打开 https://github.com/login/device"
+            log "出现验证码后，在终端按 Enter 继续，并在上述网页输入验证码"
+            log "gh 登录状态将保留在当前系统用户的登录存储中，退出安装器不会清除"
+            gh auth login \
+                --hostname github.com \
+                --git-protocol https \
+                --web \
+                --scopes repo
             ;;
         2|token|pat)
             GITHUB_AUTH_MODE="token"
