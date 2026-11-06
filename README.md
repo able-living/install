@@ -19,7 +19,7 @@ plan validation:
 
 ```bash
 ABLE_LIVING_INSTALLER_REF=staging \
-  bash <(curl -fsSL https://github.com/able-living/install/releases/download/v0.1.0-rc.3/odoo-stack) \
+  bash <(curl -fsSL https://github.com/able-living/install/releases/download/v0.1.0-rc.4/odoo-stack) \
   -- --plan
 ```
 
@@ -29,6 +29,14 @@ verifies access to the private `able-living/odoo-stack` repository, resolves the
 requested installer ref to a full Git SHA, and downloads the real installer from
 that exact SHA. It then passes the temporary credential file to the installer
 without placing a token in command-line arguments.
+
+The launcher first checks
+`platform/deploy/bootstrap/install.sh`, then falls back to
+`deploy/bootstrap/install.sh` only when GitHub explicitly reports that the new
+path does not exist. Both checks use the same already-resolved commit SHA.
+Authentication, rate-limit, network, download and script-validation failures
+stop immediately instead of trying another path. See
+[launcher compatibility](COMPATIBILITY.md).
 
 ### Remembered GitHub login
 
