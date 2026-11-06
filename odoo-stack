@@ -4,7 +4,8 @@ set -Eeuo pipefail
 umask 077
 
 readonly GITHUB_REPOSITORY="able-living/odoo-stack"
-readonly INSTALLER_PATH="deploy/bootstrap/install.sh"
+readonly INSTALLER_PATH="platform/deploy/bootstrap/install.sh"
+readonly LEGACY_INSTALLER_PATH="deploy/bootstrap/install.sh"
 INSTALLER_REF="${ABLE_LIVING_INSTALLER_REF:-main}"
 TEMP_ROOT=""
 GITHUB_AUTH_MODE=""
@@ -170,6 +171,27 @@ github_command() {
     fi
 }
 
+installer_path_exists() {
+    local path="$1"
+    local error_file="$TEMP_ROOT/installer-path-error"
+    local path_type
+
+    : > "$error_file"
+    if path_type=$(github_command api \
+        "repos/$GITHUB_REPOSITORY/contents/$path?ref=$resolved_sha" \
+        --jq .type 2>"$error_file"); then
+        [ "$path_type" = "file" ] \
+            || fail "installer path is not a file: $path"
+        return 0
+    fi
+
+    if grep -Fq "HTTP 404" "$error_file"; then
+        return 1
+    fi
+    cat "$error_file" >&2
+    fail "could not inspect installer path $path"
+}
+
 install_github_cli
 TEMP_ROOT=$(mktemp -d /tmp/able-living-launcher.XXXXXX)
 select_github_auth
@@ -193,11 +215,17 @@ resolved_sha=$(github_command api \
 
 installer="$TEMP_ROOT/install.sh"
 token_file="$TEMP_ROOT/github-token"
+installer_path="$INSTALLER_PATH"
+if ! installer_path_exists "$installer_path"; then
+    installer_path="$LEGACY_INSTALLER_PATH"
+    log "canonical installer path is unavailable; trying the legacy path"
+fi
 github_command api \
     --header "Accept: application/vnd.github.raw+json" \
-    "repos/$GITHUB_REPOSITORY/contents/$INSTALLER_PATH?ref=$resolved_sha" \
+    "repos/$GITHUB_REPOSITORY/contents/$installer_path?ref=$resolved_sha" \
     > "$installer" \
     || fail "could not download the private installer"
+[ -s "$installer" ] || fail "downloaded installer is empty"
 bash -n "$installer" || fail "downloaded installer is not valid Bash"
 chmod 0700 "$installer"
 install -m 0600 /dev/null "$token_file"
@@ -208,7 +236,7 @@ else
 fi
 
 installer_sha256=$(sha256sum "$installer" | awk '{print $1}')
-log "resolved private installer $resolved_sha ($installer_sha256)"
+log "resolved private installer $resolved_sha from $installer_path ($installer_sha256)"
 plan_only=0
 for argument in "${FORWARD_ARGS[@]}"; do
     if [ "$argument" = "--plan" ]; then

@@ -52,6 +52,10 @@ class LauncherTest(unittest.TestCase):
                       "api repos/able-living/odoo-stack/commits/main --jq .sha")
                         printf '%040d\n' 0
                         ;;
+                      "api repos/able-living/odoo-stack/contents/platform/deploy/bootstrap/install.sh?ref=0000000000000000000000000000000000000000 --jq .type")
+                        printf 'gh: Not Found (HTTP 404)\n' >&2
+                        exit 1
+                        ;;
                       *"repos/able-living/odoo-stack/contents/deploy/bootstrap/install.sh?ref="*)
                         cat "$FAKE_INSTALLER"
                         ;;
@@ -105,6 +109,171 @@ class LauncherTest(unittest.TestCase):
         )
 
 
+class InstallerPathTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.calls = self.root / "calls"
+        self.new_installer = self.root / "new-installer.sh"
+        self.legacy_installer = self.root / "legacy-installer.sh"
+        self.new_installer.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf 'installer-source=new\\n'\n",
+            encoding="utf-8",
+        )
+        self.legacy_installer.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf 'installer-source=legacy\\n'\n",
+            encoding="utf-8",
+        )
+        fake_gh = self.bin / "gh"
+        fake_gh.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                printf '%s\n' "$*" >> "$GH_CALLS"
+                case "$*" in
+                  "auth status --hostname github.com") exit 0 ;;
+                  "auth token --hostname github.com") printf 'cached-token\n' ;;
+                  "api user --jq .login") printf 'test-user\n' ;;
+                  "repo view able-living/odoo-stack --json viewerPermission --jq .viewerPermission")
+                    printf 'READ\n'
+                    ;;
+                  "api repos/able-living/odoo-stack/commits/main --jq .sha")
+                    printf '%040d\n' 0
+                    ;;
+                  "api repos/able-living/odoo-stack/contents/platform/deploy/bootstrap/install.sh?ref=0000000000000000000000000000000000000000 --jq .type")
+                    status="${NEW_PATH_STATUS:-200}"
+                    case "$status" in
+                      200) printf '%s\n' "${NEW_PATH_TYPE:-file}" ;;
+                      404)
+                        printf 'gh: Not Found (HTTP 404)\n' >&2
+                        exit 1
+                        ;;
+                      *)
+                        printf 'gh: request failed (HTTP %s)\n' "$status" >&2
+                        exit 1
+                        ;;
+                    esac
+                    ;;
+                  *"repos/able-living/odoo-stack/contents/platform/deploy/bootstrap/install.sh?ref="*)
+                    test "${NEW_DOWNLOAD_FAILURE:-0}" = 0 || {
+                      printf 'gh: server error (HTTP 502)\n' >&2
+                      exit 1
+                    }
+                    cat "$NEW_INSTALLER"
+                    ;;
+                  *"repos/able-living/odoo-stack/contents/deploy/bootstrap/install.sh?ref="*)
+                    cat "$LEGACY_INSTALLER"
+                    ;;
+                  *) exit 90 ;;
+                esac
+                """
+            ),
+            encoding="utf-8",
+        )
+        fake_gh.chmod(0o755)
+        self.environment = os.environ.copy()
+        for name in ("GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "ABLE_LIVING_INSTALLER_REF"):
+            self.environment.pop(name, None)
+        self.environment.update({
+            "PATH": f"{self.bin}:{self.environment['PATH']}",
+            "GH_CALLS": str(self.calls),
+            "NEW_INSTALLER": str(self.new_installer),
+            "LEGACY_INSTALLER": str(self.legacy_installer),
+        })
+
+    def run_launcher(self):
+        return subprocess.run(
+            ("bash", str(LAUNCHER), "--plan"),
+            env=self.environment,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+
+    def assert_single_sha_resolution(self):
+        calls = self.calls.read_text(encoding="utf-8")
+        self.assertEqual(calls.count("commits/main --jq .sha"), 1)
+        self.assertNotIn("?ref=main", calls)
+        return calls
+
+    def test_new_path_is_preferred_when_present(self):
+        result = self.run_launcher()
+        calls = self.assert_single_sha_resolution()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("installer-source=new", result.stdout)
+        self.assertIn("/contents/platform/deploy/bootstrap/install.sh?ref=", calls)
+        self.assertNotIn("/contents/deploy/bootstrap/install.sh?ref=", calls)
+        self.assertNotIn("trying the legacy path", result.stdout)
+
+    def test_missing_new_path_falls_back_to_legacy_path_with_same_sha(self):
+        self.environment["NEW_PATH_STATUS"] = "404"
+        result = self.run_launcher()
+        calls = self.assert_single_sha_resolution()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("trying the legacy path", result.stdout)
+        self.assertIn("installer-source=legacy", result.stdout)
+        self.assertIn("/contents/platform/deploy/bootstrap/install.sh?ref=", calls)
+        self.assertIn("/contents/deploy/bootstrap/install.sh?ref=", calls)
+        self.assertIn("?ref=" + "0" * 40, calls)
+
+    def test_non_404_path_check_errors_do_not_fall_back(self):
+        for status in ("401", "403", "429", "500", "502"):
+            with self.subTest(status=status):
+                self.calls.unlink(missing_ok=True)
+                self.environment["NEW_PATH_STATUS"] = status
+                result = self.run_launcher()
+                calls = self.calls.read_text(encoding="utf-8")
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("could not inspect installer path", result.stderr)
+                self.assertNotIn("/contents/deploy/bootstrap/install.sh?ref=", calls)
+                self.assertNotIn("trying the legacy path", result.stdout)
+
+    def test_new_path_download_failure_does_not_fall_back(self):
+        self.environment["NEW_DOWNLOAD_FAILURE"] = "1"
+        result = self.run_launcher()
+        calls = self.calls.read_text(encoding="utf-8")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not download the private installer", result.stderr)
+        self.assertNotIn("/contents/deploy/bootstrap/install.sh?ref=", calls)
+
+    def test_empty_or_invalid_download_does_not_fall_back(self):
+        for content in ("", "if then\n"):
+            with self.subTest(content=content):
+                self.calls.unlink(missing_ok=True)
+                self.new_installer.write_text(content, encoding="utf-8")
+                result = self.run_launcher()
+                calls = self.calls.read_text(encoding="utf-8")
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("/contents/deploy/bootstrap/install.sh?ref=", calls)
+                if not content:
+                    self.assertIn("downloaded installer is empty", result.stderr)
+                else:
+                    self.assertIn("not valid Bash", result.stderr)
+
+    def test_non_file_path_type_does_not_fall_back(self):
+        self.environment["NEW_PATH_TYPE"] = "dir"
+        result = self.run_launcher()
+        calls = self.calls.read_text(encoding="utf-8")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("installer path is not a file", result.stderr)
+        self.assertNotIn("/contents/deploy/bootstrap/install.sh?ref=", calls)
+
+
 class PersistentLoginTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -147,6 +316,10 @@ class PersistentLoginTest(unittest.TestCase):
                 ;;
               "api repos/able-living/odoo-stack/commits/main --jq .sha")
                 printf '%040d\\n' 0
+                ;;
+              "api repos/able-living/odoo-stack/contents/platform/deploy/bootstrap/install.sh?ref=0000000000000000000000000000000000000000 --jq .type")
+                printf 'gh: Not Found (HTTP 404)\\n' >&2
+                exit 1
                 ;;
               *"/contents/deploy/bootstrap/install.sh?ref="*) cat "$FAKE_INSTALLER" ;;
               *) exit 90 ;;
