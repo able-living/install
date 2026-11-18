@@ -52,12 +52,11 @@ Manually entered temporary tokens are **not** saved as a persistent `gh` login;
 the temporary file used to hand credentials to the private installer is deleted
 on exit in both authentication modes.
 
-The default private installer ref is `main`. An approved Staging test can select
-another long-lived branch or an exact commit without changing the public
-launcher:
+The launcher defaults to `18/main`. Select `18/staging` for an approved Staging
+test. The existing names `main` and `staging` select the corresponding CE 18 branches.
 
 ```bash
-ABLE_LIVING_INSTALLER_REF=staging \
+ABLE_LIVING_INSTALLER_REF=18/staging \
   bash <(curl -fsSL https://github.com/able-living/install/releases/latest/download/odoo-stack)
 ```
 

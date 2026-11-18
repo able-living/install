@@ -6,7 +6,7 @@ umask 077
 readonly GITHUB_REPOSITORY="able-living/odoo"
 readonly INSTALLER_PATH="platform/deploy/bootstrap/install.sh"
 readonly LEGACY_INSTALLER_PATH="deploy/bootstrap/install.sh"
-INSTALLER_REF="${ABLE_LIVING_INSTALLER_REF:-main}"
+INSTALLER_REF="${ABLE_LIVING_INSTALLER_REF:-18/main}"
 TEMP_ROOT=""
 GITHUB_AUTH_MODE=""
 GITHUB_TOKEN=""
@@ -40,9 +40,10 @@ Download the private Able Living Odoo Stack installer after GitHub
 authentication and execute it as root.
 
 Options:
-  --installer-ref REF  main, staging, or a full lowercase Git SHA
+  --installer-ref REF  18/main, 18/staging, or a full lowercase Git SHA
   -h, --help           Show this help
 
+The names main and staging remain aliases for the CE 18 branches.
 Unknown arguments such as --plan are passed to the private installer.
 EOF
 }
@@ -70,11 +71,14 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-if [ "$INSTALLER_REF" != "main" ] \
-    && [ "$INSTALLER_REF" != "staging" ] \
-    && [[ ! "$INSTALLER_REF" =~ ^[0-9a-f]{40}$ ]]; then
-    fail "installer ref must be main, staging, or a full lowercase Git SHA"
-fi
+case "$INSTALLER_REF" in
+    main|staging) INSTALLER_REF="18/$INSTALLER_REF" ;;
+    18/main|18/staging) ;;
+    *)
+        [[ "$INSTALLER_REF" =~ ^[0-9a-f]{40}$ ]] \
+            || fail "installer ref must be 18/main, 18/staging, or a full lowercase Git SHA"
+        ;;
+esac
 
 run_as_root() {
     if [ "$(id -u)" -eq 0 ]; then
@@ -207,9 +211,17 @@ case "$permission" in
 esac
 log "GitHub access verified for $github_login ($permission)"
 
-resolved_sha=$(github_command api \
-    "repos/$GITHUB_REPOSITORY/commits/$INSTALLER_REF" --jq .sha 2>/dev/null) \
-    || fail "could not resolve installer ref $INSTALLER_REF"
+if [[ "$INSTALLER_REF" == 18/* ]]; then
+    resolved_sha=$(github_command api \
+        "repos/$GITHUB_REPOSITORY/git/ref/heads/$INSTALLER_REF" \
+        --jq "select(.ref == \"refs/heads/$INSTALLER_REF\" and .object.type == \"commit\") | .object.sha" \
+        2>/dev/null) || fail "could not resolve installer ref $INSTALLER_REF"
+else
+    resolved_sha=$(github_command api \
+        "repos/$GITHUB_REPOSITORY/commits/$INSTALLER_REF" --jq .sha 2>/dev/null) \
+        || fail "could not resolve installer ref $INSTALLER_REF"
+    [ "$resolved_sha" = "$INSTALLER_REF" ] || fail "GitHub returned a different installer SHA"
+fi
 [[ "$resolved_sha" =~ ^[0-9a-f]{40}$ ]] \
     || fail "GitHub returned an invalid installer SHA"
 

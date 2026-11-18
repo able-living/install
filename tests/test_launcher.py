@@ -22,15 +22,17 @@ class LauncherTest(unittest.TestCase):
         self.assertIn("--installer-ref", result.stdout)
 
     def test_invalid_installer_ref_is_rejected_before_authentication(self):
-        result = subprocess.run(
-            ("bash", str(LAUNCHER), "--installer-ref", "feature/not-allowed"),
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("installer ref must be", result.stderr)
+        for ref in ("feature/not-allowed", "20/main", "20/staging"):
+            with self.subTest(ref=ref):
+                result = subprocess.run(
+                    ("bash", str(LAUNCHER), "--installer-ref", ref),
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("installer ref must be", result.stderr)
+                self.assertNotIn("请选择 GitHub 认证方式", result.stderr)
 
     def test_token_auth_downloads_exact_sha_and_forwards_arguments(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -49,7 +51,7 @@ class LauncherTest(unittest.TestCase):
                       "repo view able-living/odoo --json viewerPermission --jq .viewerPermission")
                         printf '%s\n' READ
                         ;;
-                      "api repos/able-living/odoo/commits/main --jq .sha")
+                      "api repos/able-living/odoo/git/ref/heads/18/main --jq "*)
                         printf '%040d\n' 0
                         ;;
                       "api repos/able-living/odoo/contents/platform/deploy/bootstrap/install.sh?ref=0000000000000000000000000000000000000000 --jq .type")
@@ -103,7 +105,7 @@ class LauncherTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("installer-args=--plan", result.stdout)
-        self.assertIn("commits/main", call_log)
+        self.assertIn("git/ref/heads/18/main", call_log)
         self.assertIn(
             "?ref=0000000000000000000000000000000000000000", call_log
         )
@@ -145,8 +147,11 @@ class InstallerPathTest(unittest.TestCase):
                   "repo view able-living/odoo --json viewerPermission --jq .viewerPermission")
                     printf 'READ\n'
                     ;;
-                  "api repos/able-living/odoo/commits/main --jq .sha")
-                    printf '%040d\n' 0
+                  "api repos/able-living/odoo/git/ref/heads/18/main --jq "* | \
+                  "api repos/able-living/odoo/git/ref/heads/18/staging --jq "* | \
+                  "api repos/able-living/odoo/commits/0000000000000000000000000000000000000000 --jq .sha")
+                    [ "${RESOLUTION_FAILURE:-0}" = 0 ] || exit 1
+                    printf '%s\n' "${RESOLVED_SHA:-0000000000000000000000000000000000000000}"
                     ;;
                   "api repos/able-living/odoo/contents/platform/deploy/bootstrap/install.sh?ref=0000000000000000000000000000000000000000 --jq .type")
                     status="${NEW_PATH_STATUS:-200}"
@@ -189,9 +194,9 @@ class InstallerPathTest(unittest.TestCase):
             "LEGACY_INSTALLER": str(self.legacy_installer),
         })
 
-    def run_launcher(self):
+    def run_launcher(self, *options):
         return subprocess.run(
-            ("bash", str(LAUNCHER), "--plan"),
+            ("bash", str(LAUNCHER), *options, "--plan"),
             env=self.environment,
             text=True,
             capture_output=True,
@@ -201,8 +206,8 @@ class InstallerPathTest(unittest.TestCase):
 
     def assert_single_sha_resolution(self):
         calls = self.calls.read_text(encoding="utf-8")
-        self.assertEqual(calls.count("commits/main --jq .sha"), 1)
-        self.assertNotIn("?ref=main", calls)
+        self.assertEqual(calls.count("git/ref/heads/18/main --jq "), 1)
+        self.assertNotIn("?ref=18/main", calls)
         return calls
 
     def test_new_path_is_preferred_when_present(self):
@@ -214,6 +219,51 @@ class InstallerPathTest(unittest.TestCase):
         self.assertIn("/contents/platform/deploy/bootstrap/install.sh?ref=", calls)
         self.assertNotIn("/contents/deploy/bootstrap/install.sh?ref=", calls)
         self.assertNotIn("trying the legacy path", result.stdout)
+
+    def test_aliases_and_explicit_ce18_branches_resolve_to_exact_refs(self):
+        for ref, branch, options in (
+            ("main", "18/main", ()),
+            ("staging", "18/staging", ()),
+            ("18/main", "18/main", ("--installer-ref", "18/main")),
+            ("18/staging", "18/staging", ("--installer-ref", "18/staging")),
+        ):
+            with self.subTest(ref=ref):
+                self.calls.unlink(missing_ok=True)
+                self.environment["ABLE_LIVING_INSTALLER_REF"] = ref if not options else "staging"
+                result = self.run_launcher(*options)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = self.calls.read_text(encoding="utf-8")
+                self.assertEqual(calls.count(f"git/ref/heads/{branch} --jq "), 1)
+                self.assertEqual(calls.count("/git/ref/heads/"), 1)
+                self.assertNotIn(f"?ref={branch}", calls)
+                self.assertIn("?ref=" + "0" * 40, calls)
+
+    def test_full_sha_continues_to_select_the_exact_commit(self):
+        sha = "0" * 40
+        result = self.run_launcher("--installer-ref", sha)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls.read_text(encoding="utf-8")
+        self.assertIn(f"/commits/{sha} --jq .sha", calls)
+        self.assertNotIn("/git/ref/heads/", calls)
+        self.assertIn(f"?ref={sha}", calls)
+
+    def test_missing_ce18_ref_stops_before_downloading(self):
+        self.environment["RESOLUTION_FAILURE"] = "1"
+        result = self.run_launcher("--installer-ref", "staging")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not resolve installer ref 18/staging", result.stderr)
+        calls = self.calls.read_text(encoding="utf-8")
+        self.assertNotIn("/commits/staging", calls)
+        self.assertNotIn("/contents/", calls)
+
+    def test_full_sha_rejects_a_different_resolved_commit(self):
+        self.environment["RESOLVED_SHA"] = "1" * 40
+        result = self.run_launcher("--installer-ref", "0" * 40)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("GitHub returned a different installer SHA", result.stderr)
+        self.assertNotIn("/contents/", self.calls.read_text(encoding="utf-8"))
 
     def test_missing_new_path_falls_back_to_legacy_path_with_same_sha(self):
         self.environment["NEW_PATH_STATUS"] = "404"
@@ -314,7 +364,7 @@ class PersistentLoginTest(unittest.TestCase):
                 test "${REPOSITORY_DENIED:-0}" = 0
                 printf 'READ\\n'
                 ;;
-              "api repos/able-living/odoo/commits/main --jq .sha")
+              "api repos/able-living/odoo/git/ref/heads/18/main --jq "*)
                 printf '%040d\\n' 0
                 ;;
               "api repos/able-living/odoo/contents/platform/deploy/bootstrap/install.sh?ref=0000000000000000000000000000000000000000 --jq .type")
