@@ -6,26 +6,18 @@ and customer data remain private.
 
 ## Odoo Stack
 
-After the private installer is approved for Production, install with the latest
-stable launcher:
+Install on a supported Debian host with the latest stable launcher:
 
 ```bash
 bash <(curl -fsSL https://github.com/able-living/install/releases/latest/download/odoo-stack)
 ```
 
-No stable launcher is published while the private installer remains on
-Staging. The current candidate can be used for an authorized, non-destructive
-plan validation:
-
-```bash
-ABLE_LIVING_INSTALLER_REF=staging \
-  bash <(curl -fsSL https://github.com/able-living/install/releases/download/v0.1.0-rc.4/odoo-stack) \
-  -- --plan
-```
+Add `-- --plan` to check the configuration before installing. The plan shows
+`/opt/able-living/odoo/ce/18/` as the CE 18 version root.
 
 The launcher installs GitHub CLI and Git when needed, reuses an existing GitHub
 login or asks the operator to authenticate,
-verifies access to the private `able-living/odoo-stack` repository, resolves the
+verifies access to the private `able-living/odoo` repository, resolves the
 requested installer ref to a full Git SHA, and downloads the real installer from
 that exact SHA. It then passes the temporary credential file to the installer
 without placing a token in command-line arguments.
