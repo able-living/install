@@ -46,17 +46,17 @@ class LauncherTest(unittest.TestCase):
                     printf '%s\n' "$*" >> "$GH_CALLS"
                     case "$*" in
                       "api user --jq .login") printf '%s\n' test-user ;;
-                      "repo view able-living/odoo-stack --json viewerPermission --jq .viewerPermission")
+                      "repo view able-living/odoo --json viewerPermission --jq .viewerPermission")
                         printf '%s\n' READ
                         ;;
-                      "api repos/able-living/odoo-stack/commits/main --jq .sha")
+                      "api repos/able-living/odoo/commits/main --jq .sha")
                         printf '%040d\n' 0
                         ;;
-                      "api repos/able-living/odoo-stack/contents/platform/deploy/bootstrap/install.sh?ref=0000000000000000000000000000000000000000 --jq .type")
+                      "api repos/able-living/odoo/contents/platform/deploy/bootstrap/install.sh?ref=0000000000000000000000000000000000000000 --jq .type")
                         printf 'gh: Not Found (HTTP 404)\n' >&2
                         exit 1
                         ;;
-                      *"repos/able-living/odoo-stack/contents/deploy/bootstrap/install.sh?ref="*)
+                      *"repos/able-living/odoo/contents/deploy/bootstrap/install.sh?ref="*)
                         cat "$FAKE_INSTALLER"
                         ;;
                       *) exit 1 ;;
@@ -142,13 +142,13 @@ class InstallerPathTest(unittest.TestCase):
                   "auth status --hostname github.com") exit 0 ;;
                   "auth token --hostname github.com") printf 'cached-token\n' ;;
                   "api user --jq .login") printf 'test-user\n' ;;
-                  "repo view able-living/odoo-stack --json viewerPermission --jq .viewerPermission")
+                  "repo view able-living/odoo --json viewerPermission --jq .viewerPermission")
                     printf 'READ\n'
                     ;;
-                  "api repos/able-living/odoo-stack/commits/main --jq .sha")
+                  "api repos/able-living/odoo/commits/main --jq .sha")
                     printf '%040d\n' 0
                     ;;
-                  "api repos/able-living/odoo-stack/contents/platform/deploy/bootstrap/install.sh?ref=0000000000000000000000000000000000000000 --jq .type")
+                  "api repos/able-living/odoo/contents/platform/deploy/bootstrap/install.sh?ref=0000000000000000000000000000000000000000 --jq .type")
                     status="${NEW_PATH_STATUS:-200}"
                     case "$status" in
                       200) printf '%s\n' "${NEW_PATH_TYPE:-file}" ;;
@@ -162,14 +162,14 @@ class InstallerPathTest(unittest.TestCase):
                         ;;
                     esac
                     ;;
-                  *"repos/able-living/odoo-stack/contents/platform/deploy/bootstrap/install.sh?ref="*)
+                  *"repos/able-living/odoo/contents/platform/deploy/bootstrap/install.sh?ref="*)
                     test "${NEW_DOWNLOAD_FAILURE:-0}" = 0 || {
                       printf 'gh: server error (HTTP 502)\n' >&2
                       exit 1
                     }
                     cat "$NEW_INSTALLER"
                     ;;
-                  *"repos/able-living/odoo-stack/contents/deploy/bootstrap/install.sh?ref="*)
+                  *"repos/able-living/odoo/contents/deploy/bootstrap/install.sh?ref="*)
                     cat "$LEGACY_INSTALLER"
                     ;;
                   *) exit 90 ;;
@@ -314,10 +314,10 @@ class PersistentLoginTest(unittest.TestCase):
                 test "${REPOSITORY_DENIED:-0}" = 0
                 printf 'READ\\n'
                 ;;
-              "api repos/able-living/odoo-stack/commits/main --jq .sha")
+              "api repos/able-living/odoo/commits/main --jq .sha")
                 printf '%040d\\n' 0
                 ;;
-              "api repos/able-living/odoo-stack/contents/platform/deploy/bootstrap/install.sh?ref=0000000000000000000000000000000000000000 --jq .type")
+              "api repos/able-living/odoo/contents/platform/deploy/bootstrap/install.sh?ref=0000000000000000000000000000000000000000 --jq .type")
                 printf 'gh: Not Found (HTTP 404)\\n' >&2
                 exit 1
                 ;;

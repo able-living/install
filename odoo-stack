@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly GITHUB_REPOSITORY="able-living/odoo-stack"
+readonly GITHUB_REPOSITORY="able-living/odoo"
 readonly INSTALLER_PATH="platform/deploy/bootstrap/install.sh"
 readonly LEGACY_INSTALLER_PATH="deploy/bootstrap/install.sh"
 INSTALLER_REF="${ABLE_LIVING_INSTALLER_REF:-main}"
